@@ -1,0 +1,789 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no"/>
+  <meta name="apple-mobile-web-app-capable" content="yes"/>
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+  <meta name="apple-mobile-web-app-title" content="資產管控"/>
+  <meta name="mobile-web-app-capable" content="yes"/>
+  <meta name="theme-color" content="#C8963E"/>
+  <meta name="description" content="個人財富管控平台"/>
+  <link rel="manifest" href="./manifest.json"/>
+  <link rel="apple-touch-icon" href="./icon-192.png"/>
+  <title>資產管控平台</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.development.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.development.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+  <style>
+    *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+    html,body{height:100%;overflow:hidden;background:#06080D}
+    #root{height:100%;overflow:hidden}
+    #loading{position:fixed;inset:0;background:#06080D;display:flex;flex-direction:column;align-items:center;justify-content:center;color:#C8963E;font-family:monospace;z-index:9999;gap:12px}
+    .spin{width:36px;height:36px;border:2.5px solid #1A2332;border-top-color:#C8963E;border-radius:50%;animation:sp 1s linear infinite}
+    @keyframes sp{to{transform:rotate(360deg)}}
+    /* PWA install banner */
+    #install-banner{display:none;position:fixed;bottom:80px;left:12px;right:12px;background:#111620;border:1px solid #C8963E40;border-radius:14px;padding:12px 16px;z-index:100;align-items:center;gap:10px;animation:slideUp .3s ease}
+    #install-banner.show{display:flex}
+    @keyframes slideUp{from{transform:translateY(20px);opacity:0}to{transform:translateY(0);opacity:1}}
+  </style>
+</head>
+<body>
+<div id="loading">
+  <div class="spin"></div>
+  <div style="font-size:12px;color:#C8963E;letter-spacing:2px">WEALTH COMMAND CENTER</div>
+  <div style="font-size:10px;color:#4A5568">載入中…</div>
+</div>
+<div id="install-banner">
+  <span style="font-size:20px">📲</span>
+  <div style="flex:1">
+    <div style="color:#C8963E;font-size:12px;font-weight:700;font-family:monospace">安裝為 App</div>
+    <div style="color:#6B7280;font-size:10px;font-family:monospace">可離線使用，加入手機桌面</div>
+  </div>
+  <button id="install-btn" style="background:#C8963E;color:#06080D;border:none;border-radius:8px;padding:6px 14px;font-size:11px;font-weight:700;cursor:pointer;font-family:monospace">安裝</button>
+  <button id="dismiss-btn" style="background:none;border:none;color:#6B7280;font-size:18px;cursor:pointer;padding:0 4px">✕</button>
+</div>
+<div id="root"></div>
+
+<script>
+// Service Worker registration
+if('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('./sw.js').catch(()=>{});
+  });
+}
+// PWA Install prompt
+let deferredPrompt;
+window.addEventListener('beforeinstallprompt', e => {
+  e.preventDefault(); deferredPrompt = e;
+  const banner = document.getElementById('install-banner');
+  if(banner) banner.classList.add('show');
+});
+document.getElementById('install-btn')?.addEventListener('click', async () => {
+  if(!deferredPrompt) return;
+  deferredPrompt.prompt();
+  const {outcome} = await deferredPrompt.userChoice;
+  deferredPrompt = null;
+  document.getElementById('install-banner').classList.remove('show');
+});
+document.getElementById('dismiss-btn')?.addEventListener('click', () => {
+  document.getElementById('install-banner').classList.remove('show');
+});
+</script>
+
+<script type="text/babel">
+const { useState, useEffect, useCallback, useMemo, useRef } = React;
+
+// ── Tokens ────────────────────────────────────────────────────────────────────
+const C = {
+  bg:"#06080D", panel:"#0C1018", panel2:"#111620", border:"#1A2332",
+  gold:"#C8963E", goldL:"#E8B85A", goldDim:"#6B4F1E",
+  up:"#27AE60", upL:"#2ECC71", down:"#C0392B", downL:"#E74C3C",
+  blue:"#2980B9", blueL:"#3498DB", purple:"#7D3C98", purpleL:"#9B59B6",
+  teal:"#1A8A7A", tealL:"#1ABC9C",
+  text:"#D8DCE8", muted:"#4A5568",
+};
+const fmt  = (n,d=0) => n==null?"—":Number(n).toLocaleString("zh-TW",{minimumFractionDigits:d,maximumFractionDigits:d});
+const fmtM = n => { if(n==null) return "—"; const abs=Math.abs(n),sign=n<0?"-":""; if(abs>=1e8) return sign+(abs/1e8).toFixed(2)+"億"; if(abs>=1e4) return sign+(abs/1e4).toFixed(1)+"萬"; return sign+fmt(abs); };
+const fmtPct = (v,p=1) => v==null?"—":(v>=0?"+":"")+v.toFixed(p)+"%";
+const today = () => new Date().toISOString().slice(0,10);
+
+// ── Data ──────────────────────────────────────────────────────────────────────
+const INIT = {
+  stocks:[
+    {id:1,symbol:"2330",name:"台積電",  shares:500, cost:520, price:820, prev:808, market:"TW"},
+    {id:2,symbol:"2317",name:"鴻海",    shares:2000,cost:105, price:118, prev:121, market:"TW"},
+    {id:3,symbol:"AAPL",name:"蘋果",    shares:100, cost:165, price:189, prev:187, market:"US"},
+    {id:4,symbol:"NVDA",name:"輝達",    shares:50,  cost:480, price:875, prev:862, market:"US"},
+    {id:5,symbol:"00878",name:"國泰永續",shares:5000,cost:18.5,price:21.3,prev:21.1,market:"TW"},
+  ],
+  realestate:[
+    {id:1,name:"台北信義區住宅",area:35,purchaseYear:2018,purchasePrice:2800,currentPrice:4200,rent:45000,mortgage:38000,address:"台北市信義區",propertyTax:15000},
+    {id:2,name:"新竹竹北透天",  area:60,purchaseYear:2020,purchasePrice:1500,currentPrice:2100,rent:35000,mortgage:28000,address:"新竹縣竹北市",propertyTax:8000},
+  ],
+  funds:[
+    {id:1,name:"元大台灣50",  code:"0050",units:3000,cost:125,nav:158,category:"ETF",  risk:"低"},
+    {id:2,name:"富達全球基金",code:"FGBF",units:500, cost:220,nav:285,category:"股票型",risk:"高"},
+    {id:3,name:"聯博全球債券",code:"AGBF",units:1000,cost:98, nav:105,category:"債券型",risk:"低"},
+  ],
+  pledges:[
+    {id:1,asset:"台積電股票質押",pledged:3000000,rate:2.8,used:1500000,expiry:"2026-12-31",collateral:"股票"},
+    {id:2,asset:"信義區房貸",    pledged:5000000,rate:1.9,used:3800000,expiry:"2036-05-01",collateral:"不動產"},
+  ],
+  cashflow:[
+    {month:"10月",income:185000,expense:142000},{month:"11月",income:195000,expense:158000},
+    {month:"12月",income:185000,expense:135000},{month:"1月", income:210000,expense:128000},
+    {month:"2月", income:185000,expense:162000},{month:"3月", income:195000,expense:145000},
+    {month:"4月", income:215000,expense:138000},
+  ],
+  expenses:[
+    {id:1,date:"2026-05-01",category:"food",    desc:"午餐",      amount:95,    type:"expense"},
+    {id:2,date:"2026-05-02",category:"transport",desc:"捷運",      amount:1280,  type:"expense"},
+    {id:3,date:"2026-05-01",category:"income",   desc:"薪資",      amount:120000,type:"income"},
+    {id:4,date:"2026-05-01",category:"rent",     desc:"信義區租金",amount:45000, type:"income"},
+  ],
+  goals:[
+    {id:1,name:"退休金目標",  target:30000000,current:18500000,deadline:"2040-01-01",color:"#C8963E"},
+    {id:2,name:"購買第三間房",target:5000000, current:1200000, deadline:"2028-06-01",color:"#2980B9"},
+    {id:3,name:"子女教育基金",target:3000000, current:800000,  deadline:"2030-09-01",color:"#7D3C98"},
+  ],
+  tax:{salaryIncome:1440000,dividendIncome:180000,rentalIncome:960000,deductions:{standard:124000,insurance:96000,mortgage:300000},realEstateSaleGain:0,holdingYears:5},
+};
+const CATS=[{id:"food",label:"🍜 餐飲"},{id:"transport",label:"🚇 交通"},{id:"shopping",label:"🛍️ 購物"},{id:"rent",label:"🏠 租金"},{id:"income",label:"💰 收入"},{id:"dividend",label:"📈 股息"},{id:"other",label:"📦 其他"}];
+const STORE="wealthPWA_v1";
+const load=()=>{try{const s=localStorage.getItem(STORE);return s?JSON.parse(s):null;}catch{return null;}};
+const save=d=>{try{localStorage.setItem(STORE,JSON.stringify(d));}catch{}};
+
+// ── API helpers ───────────────────────────────────────────────────────────────
+// 自動偵測 API base：本機開發用相對路徑，部署後用同域 /api/stock
+const API_BASE = window.location.hostname === "localhost" || window.location.protocol === "file:"
+  ? "https://YOUR-PROJECT.vercel.app/api/stock"   // ← 部署後 Vercel 會自動變成正確網址
+  : "/api/stock";
+
+async function fetchStock(symbol, market){
+  try{
+    const url = `${API_BASE}?symbol=${encodeURIComponent(symbol)}&market=${market}`;
+    const r = await fetch(url, {signal: AbortSignal.timeout(10000)});
+    if(!r.ok) return null;
+    const d = await r.json();
+    if(d.error) return null;
+    // 回傳格式統一
+    return {
+      price:     +d.price.toFixed(2),
+      prev:      +d.prev.toFixed(2),
+      open:      d.open,
+      high:      d.high,
+      low:       d.low,
+      vol:       d.vol,
+      change:    d.change,
+      changePct: d.changePct,
+      name:      d.name,
+      source:    d.source,
+      history:   null, // 歷史由模擬補充
+    };
+  }catch{ return null; }
+}
+async function fetchAI(prompt){
+  try{
+    const r=await fetch("https://api.anthropic.com/v1/messages",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({model:"claude-sonnet-4-20250514",max_tokens:1500,messages:[{role:"user",content:prompt}]})});
+    const d=await r.json();
+    const text=d.content?.map(b=>b.text||"").join("")||"";
+    return JSON.parse(text.replace(/```json|```/g,"").trim());
+  }catch{return null;}
+}
+const aiAnalysis=data=>fetchAI(`你是頂尖財富管理顧問（繁體中文）：
+股票：NT$${fmtM(data.sv)}，報酬${data.sr?.toFixed(1)}%，持股：${data.stocks?.map(s=>`${s.name}(${fmtPct((s.price-s.prev)/s.prev*100)})`).join("、")}
+房產：NT$${fmtM(data.rv)}，${data.rc}筆，月租金淨NT$${fmt(data.rn)}
+基金：NT$${fmtM(data.fv)}，報酬${data.fr?.toFixed(1)}%
+質押：${data.pu?.toFixed(0)}%，月現金流：NT$${fmt(data.cf)}，退休金：${data.rg?.toFixed(0)}%
+回傳JSON（無markdown）：{"summary":"2句","risk":"high|medium|low","riskNote":"1句","riskScore":65,"suggestions":["s1","s2","s3","s4"],"rebalance":"1句","cashflowAdvice":"1句"}`);
+const marketAnalysis=stocks=>fetchAI(`台灣股市分析師（繁體中文），分析持股：${stocks.map(s=>s.name).join("、")}
+回傳JSON（無markdown）：{"market":"大盤1句","tw":"台股1句","us":"美股1句","picks":[{"name":"名","action":"買入|持有|減碼","reason":"1句"}]}`);
+
+// ── Tax ───────────────────────────────────────────────────────────────────────
+const incomeTax=t=>{const b=[[0,560000,.05],[560000,1260000,.12],[1260000,2520000,.20],[2520000,4720000,.30],[4720000,9420000,.40],[9420000,Infinity,.45]];let tax=0;for(const[lo,hi,r]of b){if(t<=lo)break;tax+=(Math.min(t,hi)-lo)*r;}return Math.round(tax);};
+const reTax=(g,y)=>Math.round(g*(y>=10?.10:y>=5?.15:y>=2?.20:y>=1?.22:.45));
+
+// ── PDF export ────────────────────────────────────────────────────────────────
+const exportPDF=d=>{
+  const h=`<!DOCTYPE html><html><head><meta charset="utf-8"/><title>財富報告</title>
+<style>body{font-family:"微軟正黑體",sans-serif;padding:40px;max-width:800px;margin:0 auto}
+h1{color:#C8963E;border-bottom:3px solid #C8963E;padding-bottom:8px}h2{color:#2980B9;margin-top:20px}
+table{width:100%;border-collapse:collapse;margin:10px 0}th{background:#0C1018;color:#C8963E;padding:8px;text-align:left;font-size:12px}td{padding:8px;border-bottom:1px solid #eee;font-size:13px}
+.big{font-size:26px;font-weight:700;color:#C8963E}.up{color:#27AE60}.dn{color:#C0392B}.muted{color:#888;font-size:11px}
+.card{border:1px solid #ddd;border-radius:8px;padding:14px;margin:8px 0}.grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin:16px 0}
+.bar{background:#eee;border-radius:4px;height:8px;margin:6px 0}.bar-fill{background:#C8963E;height:8px;border-radius:4px}
+.ai{background:#fffbf0;border:1px solid #C8963E40;border-radius:8px;padding:14px;margin:10px 0}
+@media print{body{padding:20px}}</style></head><body>
+<h1>📊 個人財富管控報告</h1>
+<p class="muted">產製日期：${new Date().toLocaleDateString("zh-TW")} ｜ AI 財富平台自動產生</p>
+<div class="grid">
+<div class="card"><div class="muted">總淨資產</div><div class="big">NT$ ${fmtM(d.nw)}</div></div>
+<div class="card"><div class="muted">股票市值</div><div style="font-size:18px;font-weight:700;color:#3498DB">NT$${fmtM(d.sv)}</div><div class="${d.sr>=0?"up":"dn"}">${fmtPct(d.sr)}</div></div>
+<div class="card"><div class="muted">房地產</div><div style="font-size:18px;font-weight:700">NT$${fmtM(d.rv)}</div></div>
+</div>
+<h2>資產配置</h2>
+<table><tr><th>類別</th><th>市值</th><th>報酬率</th><th>佔比</th></tr>
+<tr><td>股票</td><td>NT$ ${fmtM(d.sv)}</td><td class="${d.sr>=0?"up":"dn"}">${fmtPct(d.sr)}</td><td>${Math.round(d.sv/(d.sv+d.rv+d.fv)*100)}%</td></tr>
+<tr><td>房地產</td><td>NT$ ${fmtM(d.rv)}</td><td class="up">+${d.rc?((d.rv-d.rc)/d.rc*100).toFixed(1):0}%</td><td>${Math.round(d.rv/(d.sv+d.rv+d.fv)*100)}%</td></tr>
+<tr><td>基金</td><td>NT$ ${fmtM(d.fv)}</td><td class="${d.fr>=0?"up":"dn"}">${fmtPct(d.fr)}</td><td>${Math.round(d.fv/(d.sv+d.rv+d.fv)*100)}%</td></tr>
+</table>
+<h2>財務目標進度</h2>
+${d.goals.map(g=>`<div class="card"><strong>${g.name}</strong>：NT$ ${fmtM(g.current)} / ${fmtM(g.target)}（${Math.round(g.current/g.target*100)}%）<div class="bar"><div class="bar-fill" style="width:${Math.min(100,Math.round(g.current/g.target*100))}%"></div></div></div>`).join("")}
+${d.ai?`<h2>AI 分析建議</h2><div class="ai"><p><strong>${d.ai.summary}</strong></p><ul style="margin:8px 0 0 16px">${d.ai.suggestions?.map(s=>`<li>${s}</li>`).join("")||""}</ul>${d.ai.rebalance?`<p style="margin-top:8px">📌 ${d.ai.rebalance}</p>`:""}</div>`:""}
+<p class="muted" style="margin-top:32px;border-top:1px solid #eee;padding-top:10px">＊本報告僅供參考，不構成投資建議。</p>
+</body></html>`;
+  const w=window.open("","_blank"); if(!w) return;
+  w.document.write(h); w.document.close(); setTimeout(()=>w.print(),600);
+};
+
+// ── Mini UI components ────────────────────────────────────────────────────────
+const Sparkline=({data=[],color,w=68,h=26})=>{
+  if(data.length<2) return <svg width={w} height={h}/>;
+  const mn=Math.min(...data),mx=Math.max(...data),rng=mx-mn||1;
+  const pts=data.map((v,i)=>`${(i/(data.length-1))*w},${h-((v-mn)/rng)*(h-2)+1}`).join(" ");
+  return <svg width={w} height={h} style={{display:"block"}}><polyline points={pts} fill="none" stroke={color} strokeWidth="1.5" strokeLinejoin="round" strokeLinecap="round"/></svg>;
+};
+const Bar=({value,max,color=C.gold,h=8,label,sub})=>{
+  const pct=Math.min(100,Math.round(value/max*100));
+  return <div>
+    {(label||sub)&&<div style={{display:"flex",justifyContent:"space-between",marginBottom:4}}>
+      <span style={{fontSize:11,color:C.text}}>{label}</span>
+      <span style={{fontSize:10,color:C.muted}}>{sub}</span>
+    </div>}
+    <div style={{background:C.border,borderRadius:h,height:h,overflow:"hidden"}}>
+      <div style={{height:"100%",width:`${pct}%`,background:color,borderRadius:h,transition:"width .8s ease"}}/>
+    </div>
+  </div>;
+};
+const Donut=({segs,size=120,label,sub})=>{
+  const r=44,cx=60,cy=60; let angle=-90;
+  const total=segs.reduce((s,x)=>s+x.value,0)||1;
+  const arcs=segs.map(seg=>{
+    const pct=seg.value/total,a1=angle*Math.PI/180; angle+=pct*360;
+    const a2=angle*Math.PI/180,large=pct>0.5?1:0;
+    const x1=cx+r*Math.cos(a1),y1=cy+r*Math.sin(a1),x2=cx+r*Math.cos(a2),y2=cy+r*Math.sin(a2);
+    return {path:`M${cx} ${cy}L${x1} ${y1}A${r} ${r} 0 ${large} 1 ${x2} ${y2}Z`,color:seg.color};
+  });
+  return <svg width={size} height={size} viewBox="0 0 120 120">
+    {arcs.map((a,i)=><path key={i} d={a.path} fill={a.color} opacity={.9}/>)}
+    <circle cx={cx} cy={cy} r={28} fill={C.panel}/>
+    {label&&<text x={cx} y={cy-4} textAnchor="middle" fill={C.text} fontSize="10" fontWeight="700">{label}</text>}
+    {sub&&<text x={cx} y={cy+10} textAnchor="middle" fill={C.muted} fontSize="8">{sub}</text>}
+  </svg>;
+};
+const Tag=({children,color=C.gold})=><span style={{background:color+"22",color,fontSize:10,padding:"2px 7px",borderRadius:20,fontWeight:700,display:"inline-block",whiteSpace:"nowrap"}}>{children}</span>;
+const Card=({children,style={}})=><div style={{background:C.panel,border:`1px solid ${C.border}`,borderRadius:14,padding:"14px 16px",...style}}>{children}</div>;
+const SL=({children,style={}})=><div style={{fontSize:9,color:C.muted,letterSpacing:1.5,textTransform:"uppercase",marginBottom:5,...style}}>{children}</div>;
+const HR=()=><div style={{borderTop:`1px solid ${C.border}`,margin:"10px 0"}}/>;
+
+// ── MAIN APP ──────────────────────────────────────────────────────────────────
+function App(){
+  const saved=load();
+  const [stocks,   setStocks]  = useState(saved?.stocks   ||INIT.stocks);
+  const [realestate]           = useState(saved?.realestate||INIT.realestate);
+  const [funds]                = useState(saved?.funds    ||INIT.funds);
+  const [pledges]              = useState(saved?.pledges  ||INIT.pledges);
+  const [cashflow]             = useState(INIT.cashflow);
+  const [expenses,setExpenses] = useState(saved?.expenses ||INIT.expenses);
+  const [goals,   setGoals]    = useState(saved?.goals    ||INIT.goals);
+  const [tax,     setTax]      = useState(saved?.tax      ||INIT.tax);
+  const [tab,     setTab]      = useState("overview");
+  const [ai,      setAi]       = useState(null);
+  const [aiLoad,  setAiLoad]   = useState(false);
+  const [mkt,     setMkt]      = useState(null);
+  const [mktLoad, setMktLoad]  = useState(false);
+  const [liveLoad,setLiveLoad] = useState(false);
+  const [lastUp,  setLastUp]   = useState(new Date());
+  const [notifs,  setNotifs]   = useState([]);
+  const [hist,    setHist]     = useState(()=>INIT.stocks.reduce((a,s)=>{a[s.id]=Array.from({length:20},(_,i)=>s.cost+(s.price-s.cost)*(i/19)+(Math.random()-.5)*s.cost*.04);return a;},{}));
+  // form states
+  const [showAS,setShowAS]=useState(false);
+  const [showAE,setShowAE]=useState(false);
+  const [showAG,setShowAG]=useState(false);
+  const [editGId,setEditGId]=useState(null);
+  const [nS,setNS]=useState({symbol:"",name:"",shares:"",cost:"",price:"",market:"TW"});
+  const [nE,setNE]=useState({date:today(),category:"food",desc:"",amount:"",type:"expense"});
+  const [nG,setNG]=useState({name:"",target:"",current:"",deadline:"",color:C.gold});
+  // screen detection
+  const [isWide,setIsWide]=useState(window.innerWidth>=768);
+  useEffect(()=>{const h=()=>setIsWide(window.innerWidth>=768);window.addEventListener('resize',h);return()=>window.removeEventListener('resize',h);},[]);
+
+  // ── Computed ────────────────────────────────────────────────────────────────
+  const sv=useMemo(()=>stocks.reduce((s,x)=>s+x.shares*x.price,0),[stocks]);
+  const sc=useMemo(()=>stocks.reduce((s,x)=>s+x.shares*x.cost,0),[stocks]);
+  const sr=(sv-sc)/sc*100;
+  const rv=useMemo(()=>realestate.reduce((s,r)=>s+r.currentPrice*10000,0),[realestate]);
+  const rc=useMemo(()=>realestate.reduce((s,r)=>s+r.purchasePrice*10000,0),[realestate]);
+  const fv=useMemo(()=>funds.reduce((s,f)=>s+f.units*f.nav,0),[funds]);
+  const fc=useMemo(()=>funds.reduce((s,f)=>s+f.units*f.cost,0),[funds]);
+  const fr=(fv-fc)/fc*100;
+  const pu=pledges.reduce((s,p)=>s+p.used,0)/pledges.reduce((s,p)=>s+p.pledged,0)*100;
+  const rn=realestate.reduce((s,r)=>s+r.rent-r.mortgage,0);
+  const na=sv+rv+fv, nw=na-pledges.reduce((s,p)=>s+p.used,0);
+  const cfNet=cashflow[cashflow.length-1].income-cashflow[cashflow.length-1].expense;
+  const rGoal=goals.find(g=>g.name.includes("退休"));
+  const rGpct=rGoal?rGoal.current/rGoal.target*100:0;
+  const taxCalc=useMemo(()=>{
+    const gross=tax.salaryIncome+tax.dividendIncome*.5+tax.rentalIncome*.43;
+    const ded=Object.values(tax.deductions).reduce((s,v)=>s+v,0);
+    const taxable=Math.max(0,gross-ded);
+    const inc=incomeTax(taxable), re=reTax(tax.realEstateSaleGain,tax.holdingYears);
+    return{gross,taxable,inc,re,total:inc+re,eff:(inc+re)/Math.max(1,gross)*100};
+  },[tax]);
+
+  // ── Side effects ────────────────────────────────────────────────────────────
+  useEffect(()=>{save({stocks,realestate,funds,pledges,expenses,goals,tax});},[stocks,expenses,goals,tax]);
+  useEffect(()=>{
+    const id=setInterval(()=>{
+      setStocks(p=>p.map(s=>({...s,prev:s.price,price:+(s.price*(1+(Math.random()-.499)*.007)).toFixed(2)})));
+      setLastUp(new Date());
+    },5000);
+    return()=>clearInterval(id);
+  },[]);
+  useEffect(()=>{
+    const msgs=[];
+    stocks.forEach(s=>{const chg=(s.price-s.prev)/s.prev*100;if(Math.abs(chg)>2)msgs.push({id:s.id,text:`${s.name} ${chg>=0?"↑":"↓"}${Math.abs(chg).toFixed(1)}%`,color:chg>=0?C.up:C.down});});
+    if(pu>75) msgs.push({id:"pu",text:`質押${pu.toFixed(0)}% ⚠`,color:C.down});
+    setNotifs(msgs.slice(0,3));
+  },[stocks,pu]);
+
+  // ── Actions ─────────────────────────────────────────────────────────────────
+  const fetchLive=useCallback(async()=>{
+    setLiveLoad(true);
+    const updated=await Promise.all(stocks.map(async s=>{
+      const d=await fetchStock(s.symbol,s.market); if(!d) return s;
+      setHist(p=>({...p,[s.id]:d.history}));
+      return{...s,price:d.price,prev:d.prev};
+    }));
+    setStocks(updated); setLastUp(new Date()); setLiveLoad(false);
+  },[stocks]);
+
+  const runAI=useCallback(async()=>{
+    setAiLoad(true);
+    const d=await aiAnalysis({sv,sr,rv,rc:realestate.length,rn,fv,fr,pu,cf:cfNet,rg:rGpct,stocks,rc_val:rc});
+    setAi(d); setAiLoad(false);
+  },[sv,sr,rv,rn,fv,fr,pu,cfNet,rGpct,stocks,rc]);
+
+  const runMkt=useCallback(async()=>{setMktLoad(true);const d=await marketAnalysis(stocks);setMkt(d);setMktLoad(false);},[stocks]);
+  useEffect(()=>{runAI();},[]);
+
+  const addStock=()=>{if(!nS.symbol||!nS.shares||!nS.cost||!nS.price)return;const s={id:Date.now(),...nS,shares:+nS.shares,cost:+nS.cost,price:+nS.price,prev:+nS.price};setStocks(p=>[...p,s]);setHist(h=>({...h,[s.id]:Array.from({length:20},()=>s.price)}));setNS({symbol:"",name:"",shares:"",cost:"",price:"",market:"TW"});setShowAS(false);};
+  const addExp=()=>{if(!nE.desc||!nE.amount)return;setExpenses(p=>[{id:Date.now(),...nE,amount:+nE.amount},...p]);setNE({date:today(),category:"food",desc:"",amount:"",type:"expense"});setShowAE(false);};
+  const saveGoal=()=>{if(!nG.name||!nG.target)return;const g={id:editGId||Date.now(),...nG,target:+nG.target,current:+nG.current};if(editGId)setGoals(p=>p.map(x=>x.id===editGId?g:x));else setGoals(p=>[...p,g]);setNG({name:"",target:"",current:"",deadline:"",color:C.gold});setEditGId(null);setShowAG(false);};
+
+  // ── Responsive styles ───────────────────────────────────────────────────────
+  const maxW = isWide ? 1100 : 560;
+  const cols2 = isWide ? "1fr 1fr 1fr" : "1fr 1fr";
+
+  const inp={background:C.panel2,border:`1.5px solid ${C.border}`,color:C.text,borderRadius:10,padding:"10px 12px",fontFamily:"inherit",fontSize:13,width:"100%",outline:"none"};
+  const btn=(c=C.gold,ghost=false)=>({background:ghost?"transparent":c,color:ghost?c:c===C.gold?C.bg:"#fff",border:`1.5px solid ${c}`,borderRadius:9,padding:"9px 14px",fontFamily:"inherit",fontSize:12,fontWeight:700,cursor:"pointer",WebkitTapHighlightColor:"transparent"});
+  const row={display:"flex",justifyContent:"space-between",alignItems:"center"};
+
+  const TABS=[["overview","📊"],["stocks","📈"],["realestate","🏠"],["funds","💼"],["pledge","🔒"],["cashflow","💸"],["goals","🎯"],["tax","🧾"],["market","🌐"]];
+  const TLABELS={overview:"概覽",stocks:"股票",realestate:"房產",funds:"基金",pledge:"質押",cashflow:"現金流",goals:"目標",tax:"稅務",market:"市場"};
+
+  const donutSegs=[{label:"房地產",value:rv,color:C.gold},{label:"股票",value:sv,color:C.blue},{label:"基金",value:fv,color:C.purple}];
+
+  // ── Layout wrapper ──────────────────────────────────────────────────────────
+  return (
+    <div style={{fontFamily:"'DM Mono','SF Mono',Consolas,monospace",background:C.bg,height:"100dvh",display:"flex",flexDirection:"column",color:C.text,maxWidth:maxW,margin:"0 auto",overflow:"hidden"}}>
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&display=swap');
+        *{box-sizing:border-box}
+        ::-webkit-scrollbar{width:3px;height:3px}::-webkit-scrollbar-thumb{background:${C.border};border-radius:2px}
+        input:focus,select:focus{border-color:${C.gold}!important;outline:none}
+        .hr:hover{background:${C.panel2}!important}
+        .btap:active{opacity:.7;transform:scale(.97)}
+        @keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
+        @keyframes fadeUp{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+        @keyframes slideIn{from{opacity:0;transform:translateX(-6px)}to{opacity:1;transform:translateX(0)}}
+        .fade{animation:fadeUp .3s ease forwards}
+        .slide{animation:slideIn .25s ease forwards}
+        select option{background:${C.panel}}
+        input[type=number]::-webkit-inner-spin-button{opacity:.3}
+        /* safe area for notch phones */
+        .safe-top{padding-top:env(safe-area-inset-top,0px)}
+        .safe-bot{padding-bottom:calc(env(safe-area-inset-bottom,0px) + 8px)}
+      `}</style>
+
+      {/* ── Header ─────────────────────────────────────────────────────── */}
+      <div className="safe-top" style={{padding:"12px 14px 10px",display:"flex",justifyContent:"space-between",alignItems:"center",flexShrink:0,background:C.panel,borderBottom:`1px solid ${C.border}`}}>
+        <div>
+          <div style={{fontSize:8,color:C.goldDim,letterSpacing:3}}>WEALTH COMMAND CENTER</div>
+          <div style={{fontSize:isWide?20:17,fontWeight:700,color:C.gold,letterSpacing:-1}}>資產管控平台</div>
+        </div>
+        <div style={{display:"flex",gap:5,alignItems:"center"}}>
+          <div style={{display:"flex",gap:4,alignItems:"center",marginRight:4}}>
+            <div style={{width:5,height:5,borderRadius:"50%",background:C.up,animation:"pulse 2s infinite"}}/>
+            <span style={{fontSize:9,color:C.up}}>LIVE</span>
+            <span style={{fontSize:9,color:C.muted,display:isWide?"inline":"none"}}>{lastUp.toLocaleTimeString("zh-TW")}</span>
+          </div>
+          <button className="btap" style={{...btn(C.blue,true),padding:"5px 9px",fontSize:9}} onClick={fetchLive} disabled={liveLoad}>{liveLoad?"⟳…":"⟳ 報價"}</button>
+          <button className="btap" style={{...btn(C.teal,true),padding:"5px 9px",fontSize:9}} onClick={()=>exportPDF({nw,sv,sr,rv,rc,fv,fr,pu,goals,ai})}>📄 PDF</button>
+        </div>
+      </div>
+
+      {/* ── Notifications ──────────────────────────────────────────────── */}
+      {notifs.length>0&&<div style={{display:"flex",gap:6,padding:"6px 12px",background:C.bg,overflowX:"auto",flexShrink:0}}>
+        {notifs.map(n=><div key={n.id} style={{background:n.color+"18",border:`1px solid ${n.color}40`,borderRadius:20,padding:"3px 10px",fontSize:10,color:n.color,whiteSpace:"nowrap"}} className="slide">{n.text}</div>)}
+      </div>}
+
+      {/* ── Net Worth card ─────────────────────────────────────────────── */}
+      <div style={{margin:"8px 10px",background:"linear-gradient(135deg,#0C1018,#111925)",border:`1px solid ${C.goldDim}`,borderRadius:16,padding:"14px 18px",flexShrink:0,boxShadow:`0 0 24px ${C.gold}10`}}>
+        <SL>總淨資產</SL>
+        <div style={{fontSize:isWide?30:26,fontWeight:700,color:C.gold,letterSpacing:-1,marginBottom:8}}>NT$ {fmtM(nw)}</div>
+        <div style={{display:"flex",gap:isWide?28:16,flexWrap:"wrap"}}>
+          {[["總資產",fmtM(na),C.text],["負債",fmtM(pledges.reduce((s,p)=>s+p.used,0)),C.down],["股票獲利",fmtM(sv-sc),sv>=sc?C.up:C.down],["房產增值",fmtM(rv-rc),C.up]].map(([l,v,c])=>(
+            <div key={l}><SL>{l}</SL><div style={{color:c,fontSize:13,fontWeight:600}}>NT$ {v}</div></div>
+          ))}
+        </div>
+      </div>
+
+      {/* ── Tab bar (bottom on mobile, top section on wide) ────────────── */}
+      {isWide ? (
+        <div style={{display:"flex",gap:3,padding:"0 10px 8px",flexShrink:0,overflowX:"auto"}}>
+          {TABS.map(([v,icon])=><button key={v} className="btap" onClick={()=>setTab(v)} style={{flex:"0 0 auto",padding:"7px 14px",border:"none",borderRadius:8,cursor:"pointer",fontFamily:"inherit",fontSize:11,fontWeight:700,background:tab===v?C.gold:"transparent",color:tab===v?C.bg:C.muted,transition:"all .2s"}}>{icon} {TLABELS[v]}</button>)}
+        </div>
+      ) : null}
+
+      {/* ── Scrollable content ─────────────────────────────────────────── */}
+      <div style={{flex:1,overflowY:"auto",padding:"8px 10px",paddingBottom:isWide?20:70}} className="fade" key={tab}>
+
+        {/* ══════════ OVERVIEW ══════════ */}
+        {tab==="overview"&&<>
+          <div style={{display:"grid",gridTemplateColumns:isWide?"1fr 1fr":"1fr",gap:10,marginBottom:10}}>
+            <Card>
+              <SL>資產配置</SL>
+              <div style={{display:"flex",gap:10,alignItems:"center",marginTop:6}}>
+                <Donut segs={donutSegs} label={fmtM(na)} sub="總資產" size={isWide?130:110}/>
+                <div style={{flex:1}}>
+                  {donutSegs.map(s=>(
+                    <div key={s.label} style={{...row,marginBottom:10}}>
+                      <div style={{display:"flex",alignItems:"center",gap:6}}><div style={{width:7,height:7,borderRadius:2,background:s.color}}/><span style={{fontSize:12}}>{s.label}</span></div>
+                      <div style={{textAlign:"right"}}><div style={{fontSize:12,fontWeight:700}}>NT$ {fmtM(s.value)}</div><div style={{fontSize:10,color:C.muted}}>{Math.round(s.value/na*100)}%</div></div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </Card>
+
+            {/* KPIs */}
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+              {[["股票報酬",fmtPct(sr),sr>=0?C.up:C.down,"stocks"],["基金報酬",fmtPct(fr),fr>=0?C.up:C.down,"funds"],
+                ["質押使用率",`${pu.toFixed(0)}%`,pu>70?C.down:pu>50?C.gold:C.up,"pledge"],["月淨現金流",`NT$${fmt(cfNet)}`,C.up,"cashflow"],
+                ["月租金淨收",`NT$${fmt(rn)}`,rn>=0?C.up:C.down,"realestate"],["退休金進度",`${rGpct.toFixed(0)}%`,C.purple,"goals"],
+              ].map(([l,v,c,t])=>(
+                <div key={l} className="hr" style={{background:C.panel,border:`1px solid ${C.border}`,borderRadius:12,padding:"12px 14px",cursor:"pointer"}} onClick={()=>setTab(t)}>
+                  <SL>{l}</SL><div style={{fontSize:18,fontWeight:700,color:c}}>{v}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* AI Panel */}
+          <Card style={{border:`1px solid ${C.goldDim}`}}>
+            <div style={{...row,marginBottom:10}}>
+              <div style={{display:"flex",alignItems:"center",gap:6}}>
+                <span style={{color:C.gold}}>◆</span>
+                <span style={{fontSize:12,fontWeight:700,color:C.gold}}>AI 財富顧問</span>
+                {ai&&<Tag color={ai.risk==="high"?C.down:ai.risk==="medium"?C.gold:C.up}>{ai.risk==="high"?"高風險":ai.risk==="medium"?"中風險":"低風險"}</Tag>}
+              </div>
+              <button className="btap" style={{...btn(C.gold),padding:"4px 10px",fontSize:10}} onClick={runAI} disabled={aiLoad}>{aiLoad?"分析中…":"重新分析"}</button>
+            </div>
+            {aiLoad?<div style={{color:C.muted,fontSize:12,textAlign:"center",padding:"14px 0",animation:"pulse 1.5s infinite"}}>◈ AI 分析中…</div>
+            :ai?<>
+              <p style={{fontSize:12,lineHeight:1.75,marginBottom:8}}>{ai.summary}</p>
+              {ai.riskNote&&<div style={{fontSize:11,color:C.muted,marginBottom:10}}>{ai.riskNote}</div>}
+              {ai.riskScore&&<div style={{marginBottom:10}}><Bar value={ai.riskScore} max={100} color={ai.riskScore>70?C.down:ai.riskScore>50?C.gold:C.up} label="風險評分" sub={`${ai.riskScore}/100`}/></div>}
+              <HR/>
+              <SL>投資建議</SL>
+              {ai.suggestions?.map((s,i)=><div key={i} style={{display:"flex",gap:7,marginBottom:7,fontSize:12,lineHeight:1.6}}><span style={{color:C.gold,fontWeight:700,flexShrink:0}}>{i+1}.</span><span>{s}</span></div>)}
+              {ai.rebalance&&<div style={{background:`${C.gold}10`,border:`1px solid ${C.goldDim}`,borderRadius:8,padding:"9px 11px",marginTop:8,fontSize:11}}><span style={{color:C.gold,fontWeight:700}}>再平衡 </span>{ai.rebalance}</div>}
+              {ai.cashflowAdvice&&<div style={{background:`${C.blue}10`,border:`1px solid ${C.blue}40`,borderRadius:8,padding:"9px 11px",marginTop:6,fontSize:11}}><span style={{color:C.blueL,fontWeight:700}}>現金流 </span>{ai.cashflowAdvice}</div>}
+            </>:<div style={{color:C.muted,fontSize:12,textAlign:"center",padding:"16px 0"}}>點擊「重新分析」取得 AI 建議</div>}
+          </Card>
+        </>}
+
+        {/* ══════════ STOCKS ══════════ */}
+        {tab==="stocks"&&<>
+          <div style={{...row,marginBottom:8}}>
+            <div><SL>股票投資組合</SL><div style={{fontSize:20,fontWeight:700,color:C.blueL}}>NT$ {fmtM(sv)}</div><div style={{fontSize:11,color:sr>=0?C.up:C.down}}>{fmtPct(sr)} · NT$ {fmtM(sv-sc)}</div></div>
+            <div style={{display:"flex",gap:6}}>
+              <button className="btap" style={{...btn(C.blue),padding:"6px 12px",fontSize:11}} onClick={fetchLive} disabled={liveLoad}>{liveLoad?"⟳":"⟳ 更新"}</button>
+              <button className="btap" style={{...btn(C.gold),padding:"6px 12px",fontSize:11}} onClick={()=>setShowAS(p=>!p)}>{showAS?"✕":"＋"}</button>
+            </div>
+          </div>
+          {showAS&&<Card style={{marginBottom:8,border:`1px solid ${C.gold}40`}} className="slide">
+            <SL>新增股票</SL>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:7,marginBottom:7}}>
+              <input style={inp} placeholder="代號(2330)" value={nS.symbol} onChange={e=>setNS(p=>({...p,symbol:e.target.value.toUpperCase()}))}/>
+              <input style={inp} placeholder="名稱" value={nS.name} onChange={e=>setNS(p=>({...p,name:e.target.value}))}/>
+              <input style={inp} placeholder="股數" type="number" value={nS.shares} onChange={e=>setNS(p=>({...p,shares:e.target.value}))}/>
+              <input style={inp} placeholder="成本價" type="number" value={nS.cost} onChange={e=>setNS(p=>({...p,cost:e.target.value}))}/>
+              <input style={inp} placeholder="現價" type="number" value={nS.price} onChange={e=>setNS(p=>({...p,price:e.target.value}))}/>
+              <select style={inp} value={nS.market} onChange={e=>setNS(p=>({...p,market:e.target.value}))}><option value="TW">台股</option><option value="US">美股</option></select>
+            </div>
+            <button className="btap" style={btn()} onClick={addStock}>確認新增</button>
+          </Card>}
+          <Card>
+            {stocks.map((s,i)=>{
+              const chg=(s.price-s.prev)/s.prev*100,ret=(s.price-s.cost)/s.cost*100,mv=s.shares*s.price;
+              return <div key={s.id} className="hr" style={{padding:"11px 4px",borderBottom:i<stocks.length-1?`1px solid ${C.border}`:"none",borderRadius:8}}>
+                <div style={row}>
+                  <div style={{flex:1,minWidth:0}}>
+                    <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:3}}>
+                      <span style={{fontSize:13,fontWeight:700}}>{s.name}</span>
+                      <Tag color={s.market==="TW"?C.teal:C.purple}>{s.market}</Tag>
+                      <span style={{fontSize:9,color:C.muted}}>{s.symbol}</span>
+                    </div>
+                    <div style={{fontSize:10,color:C.muted}}>{fmt(s.shares)}股 · 成本{fmt(s.cost,1)}</div>
+                  </div>
+                  <div style={{textAlign:"right",flexShrink:0}}>
+                    <div style={{fontSize:15,fontWeight:700}}>{fmt(s.price,2)}</div>
+                    <div style={{display:"flex",gap:4,justifyContent:"flex-end",marginTop:2}}>
+                      <Tag color={chg>=0?C.up:C.down}>{chg>=0?"+":""}{chg.toFixed(2)}%</Tag>
+                      <Tag color={ret>=0?C.up:C.down}>{ret>=0?"+":""}{ret.toFixed(1)}%</Tag>
+                    </div>
+                  </div>
+                </div>
+                <div style={{...row,marginTop:7}}>
+                  <div style={{fontSize:10,color:C.muted}}>NT$ {fmtM(mv)} · {(mv/sv*100).toFixed(1)}%</div>
+                  <div style={{display:"flex",alignItems:"center",gap:6}}>
+                    <Sparkline data={hist[s.id]||[]} color={chg>=0?C.up:C.down}/>
+                    <button style={{background:"none",border:"none",color:C.muted,cursor:"pointer",fontSize:14,padding:2}} onClick={()=>setStocks(p=>p.filter(x=>x.id!==s.id))}>🗑</button>
+                  </div>
+                </div>
+              </div>;
+            })}
+          </Card>
+          {stocks.some(s=>s.shares*s.price/sv>.4)&&<div style={{background:`${C.down}12`,border:`1px solid ${C.down}30`,borderRadius:10,padding:"9px 13px",marginTop:8,fontSize:11}}>⚠ <span style={{color:C.downL}}>集中度警示</span>：單一持股超過40%</div>}
+        </>}
+
+        {/* ══════════ REAL ESTATE ══════════ */}
+        {tab==="realestate"&&<>
+          <div style={{...row,marginBottom:8}}>
+            <div><SL>不動產投資組合</SL><div style={{fontSize:20,fontWeight:700,color:C.gold}}>NT$ {fmtM(rv)}</div><div style={{fontSize:11,color:C.up}}>+{((rv-rc)/rc*100).toFixed(1)}% · 增值NT$ {fmtM(rv-rc)}</div></div>
+            <div style={{textAlign:"right"}}><div style={{fontSize:11,color:C.muted}}>月租金</div><div style={{fontSize:13,fontWeight:700,color:C.upL}}>+NT$ {fmt(realestate.reduce((s,r)=>s+r.rent,0))}</div></div>
+          </div>
+          {realestate.map(r=>{
+            const val=r.currentPrice*10000,cost=r.purchasePrice*10000,gain=val-cost,yld=r.rent*12/val*100,cf=r.rent-r.mortgage,hy=2026-r.purchaseYear;
+            return <Card key={r.id} style={{marginBottom:8}}>
+              <div style={{...row,marginBottom:10}}><div><div style={{fontSize:13,fontWeight:700}}>{r.name}</div><div style={{fontSize:10,color:C.muted,marginTop:2}}>{r.address} · {r.area}坪 · 持有{hy}年</div></div><Tag color={C.gold}>持有中</Tag></div>
+              <div style={{display:"grid",gridTemplateColumns:cols2,gap:9,marginBottom:9}}>
+                {[["購入價",`NT$${fmt(r.purchasePrice)}萬`,C.muted],["現值",`NT$${fmt(r.currentPrice)}萬`,C.gold],
+                  ["增值",`+NT$${fmtM(gain)}`,C.up],["報酬率",`+${(gain/cost*100).toFixed(1)}%`,C.up],
+                  ["月租金",`NT$${fmt(r.rent)}`,C.text],["月房貸",`NT$${fmt(r.mortgage)}`,C.down],
+                  ["租金殖利率",`${yld.toFixed(2)}%`,C.blueL],["月現金流",`NT$${fmt(cf)}`,cf>=0?C.up:C.down],
+                ].map(([l,v,c])=><div key={l}><SL>{l}</SL><div style={{fontSize:12,fontWeight:600,color:c}}>{v}</div></div>)}
+              </div>
+              <HR/><div style={{display:"flex",gap:6}}><Tag color={hy>=10?C.up:hy>=5?C.gold:C.down}>持有{hy}年</Tag><Tag color={C.muted}>地價稅NT${fmt(r.propertyTax)}/年</Tag></div>
+            </Card>;
+          })}
+        </>}
+
+        {/* ══════════ FUNDS ══════════ */}
+        {tab==="funds"&&<>
+          <div style={{...row,marginBottom:8}}>
+            <div><SL>基金投資組合</SL><div style={{fontSize:20,fontWeight:700,color:C.purpleL}}>NT$ {fmtM(fv)}</div><div style={{fontSize:11,color:fr>=0?C.up:C.down}}>{fmtPct(fr)} · NT${fmtM(fv-fc)}</div></div>
+          </div>
+          {funds.map(f=>{
+            const val=f.units*f.nav,cost=f.units*f.cost,ret=(f.nav-f.cost)/f.cost*100;
+            return <Card key={f.id} style={{marginBottom:8}}>
+              <div style={{...row,marginBottom:8}}><div><div style={{fontSize:13,fontWeight:700}}>{f.name}</div><div style={{fontSize:10,color:C.muted}}>{f.code}</div></div><div style={{display:"flex",gap:5}}><Tag color={f.risk==="高"?C.down:f.risk==="中"?C.gold:C.up}>{f.risk}風險</Tag><Tag color={C.purple}>{f.category}</Tag></div></div>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8}}>
+                {[["單位數",fmt(f.units),C.text],["淨值",fmt(f.nav,2),C.text],["總市值",`NT$${fmtM(val)}`,C.purpleL],["成本",fmt(f.cost,2),C.muted],["報酬率",fmtPct(ret),ret>=0?C.up:C.down],["損益",`NT$${fmtM(val-cost)}`,ret>=0?C.up:C.down]].map(([l,v,c])=><div key={l}><SL>{l}</SL><div style={{fontSize:12,fontWeight:600,color:c}}>{v}</div></div>)}
+              </div>
+              <div style={{marginTop:9}}><Bar value={val} max={fv} color={C.purple} label="佔組合" sub={`${(val/fv*100).toFixed(0)}%`}/></div>
+            </Card>;
+          })}
+        </>}
+
+        {/* ══════════ PLEDGE ══════════ */}
+        {tab==="pledge"&&<>
+          <div style={{...row,marginBottom:8}}>
+            <div><SL>質押 / 負債管理</SL><div style={{fontSize:20,fontWeight:700}}>NT$ {fmtM(pledges.reduce((s,p)=>s+p.pledged,0))}</div></div>
+            <div style={{textAlign:"right"}}><div style={{fontSize:14,fontWeight:700,color:pu>70?C.downL:C.gold}}>{pu.toFixed(0)}%</div><div style={{fontSize:10,color:C.muted}}>使用率</div></div>
+          </div>
+          <Card style={{marginBottom:8}}>
+            <SL>整體使用率</SL>
+            <div style={{marginTop:6}}><Bar value={pledges.reduce((s,p)=>s+p.used,0)} max={pledges.reduce((s,p)=>s+p.pledged,0)} color={pu>75?C.down:pu>55?C.gold:C.up} label={`已動用 NT$${fmtM(pledges.reduce((s,p)=>s+p.used,0))}`} sub={`剩餘 NT$${fmtM(pledges.reduce((s,p)=>s+p.pledged-p.used,0))}`}/></div>
+            {pu>75&&<div style={{background:`${C.down}12`,border:`1px solid ${C.down}30`,borderRadius:7,padding:"7px 11px",marginTop:10,fontSize:11,color:C.downL}}>⚠ 超過75%，建議降低槓桿</div>}
+          </Card>
+          {pledges.map(p=>{
+            const util=p.used/p.pledged*100,ai=p.used*p.rate/100;
+            return <Card key={p.id} style={{marginBottom:8}}>
+              <div style={{...row,marginBottom:8}}><div style={{fontSize:13,fontWeight:700}}>{p.asset}</div><div style={{display:"flex",gap:5}}><Tag color={util>70?C.down:C.gold}>{util.toFixed(0)}%</Tag><Tag color={C.muted}>{p.collateral}</Tag></div></div>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:8}}>
+                {[["授信額度",`NT$${fmtM(p.pledged)}`,C.text],["已動用",`NT$${fmtM(p.used)}`,C.down],["年利率",`${p.rate}%`,C.muted],["年利息",`NT$${fmtM(ai)}`,C.down],["到期日",p.expiry,C.muted],["月利息",`NT$${fmt(ai/12,0)}`,C.down]].map(([l,v,c])=><div key={l}><SL>{l}</SL><div style={{fontSize:11,fontWeight:600,color:c}}>{v}</div></div>)}
+              </div>
+              <Bar value={p.used} max={p.pledged} color={util>70?C.down:C.gold} h={6}/>
+            </Card>;
+          })}
+        </>}
+
+        {/* ══════════ CASHFLOW ══════════ */}
+        {tab==="cashflow"&&<>
+          <div style={{...row,marginBottom:8}}>
+            <div><SL>現金流管理</SL><div style={{fontSize:20,fontWeight:700,color:C.up}}>+NT$ {fmt(cfNet)}</div><div style={{fontSize:10,color:C.muted}}>本月淨現金流</div></div>
+            <button className="btap" style={{...btn(C.gold),padding:"7px 12px",fontSize:11}} onClick={()=>setShowAE(p=>!p)}>{showAE?"✕":"＋ 記錄"}</button>
+          </div>
+          {showAE&&<Card style={{marginBottom:8,border:`1px solid ${C.gold}40`}} className="slide">
+            <div style={{display:"flex",gap:7,marginBottom:7}}>
+              <button className="btap" style={{...btn(nE.type==="expense"?C.down:C.panel2,true),flex:1,borderColor:C.down,color:C.down}} onClick={()=>setNE(p=>({...p,type:"expense"}))}>支出</button>
+              <button className="btap" style={{...btn(nE.type==="income"?C.up:C.panel2,true),flex:1,borderColor:C.up,color:C.up}} onClick={()=>setNE(p=>({...p,type:"income"}))}>收入</button>
+            </div>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:7,marginBottom:7}}>
+              <input style={inp} type="date" value={nE.date} onChange={e=>setNE(p=>({...p,date:e.target.value}))}/>
+              <select style={inp} value={nE.category} onChange={e=>setNE(p=>({...p,category:e.target.value}))}>{CATS.map(c=><option key={c.id} value={c.id}>{c.label}</option>)}</select>
+              <input style={inp} placeholder="說明" value={nE.desc} onChange={e=>setNE(p=>({...p,desc:e.target.value}))}/>
+              <input style={inp} placeholder="金額" type="number" value={nE.amount} onChange={e=>setNE(p=>({...p,amount:e.target.value}))}/>
+            </div>
+            <button className="btap" style={btn()} onClick={addExp}>確認新增</button>
+          </Card>}
+          <Card style={{marginBottom:8}}>
+            <SL>7個月趨勢</SL>
+            <div style={{display:"flex",gap:isWide?8:4,alignItems:"flex-end",justifyContent:"space-between",marginTop:10,padding:"0 4px"}}>
+              {cashflow.map((m,i)=>{const mx=Math.max(...cashflow.map(x=>Math.max(x.income,x.expense)));return <div key={i} style={{display:"flex",flexDirection:"column",alignItems:"center",gap:2}}>
+                <div style={{display:"flex",gap:isWide?3:2,alignItems:"flex-end"}}>
+                  <div style={{width:isWide?14:10,background:C.up,borderRadius:"3px 3px 0 0",height:`${(m.income/mx)*60}px`,opacity:.85}}/>
+                  <div style={{width:isWide?14:10,background:C.down,borderRadius:"3px 3px 0 0",height:`${(m.expense/mx)*60}px`,opacity:.85}}/>
+                </div>
+                <div style={{fontSize:9,color:C.muted}}>{m.month}</div>
+              </div>;})}
+            </div>
+            <div style={{display:"flex",gap:14,marginTop:8}}>{[[C.up,"收入"],[C.down,"支出"]].map(([c,l])=><div key={l} style={{display:"flex",alignItems:"center",gap:4}}><div style={{width:8,height:8,background:c,borderRadius:2}}/><span style={{fontSize:10,color:C.muted}}>{l}</span></div>)}</div>
+          </Card>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:8}}>
+            <Card><SL>收入來源</SL>{[["薪資",120000],["租金",80000],["股息",15000]].map(([l,v])=><div key={l} style={{...row,marginBottom:7}}><span style={{fontSize:12}}>{l}</span><span style={{fontSize:12,color:C.up,fontWeight:600}}>+{fmt(v)}</span></div>)}</Card>
+            <Card><SL>固定支出</SL>{[["房貸",66000],["生活費",38000],["保險",12000],["稅費",22000]].map(([l,v])=><div key={l} style={{...row,marginBottom:7}}><span style={{fontSize:12}}>{l}</span><span style={{fontSize:12,color:C.down,fontWeight:600}}>-{fmt(v)}</span></div>)}</Card>
+          </div>
+          <Card><SL>最近記錄</SL>{expenses.slice(0,15).map(e=>(
+            <div key={e.id} className="hr" style={{...row,padding:"9px 3px",borderBottom:`1px solid ${C.border}`,borderRadius:6}}>
+              <div><div style={{fontSize:12,fontWeight:600}}>{e.desc}</div><div style={{fontSize:9,color:C.muted,marginTop:2}}>{e.date} · {CATS.find(c=>c.id===e.category)?.label||e.category}</div></div>
+              <div style={{display:"flex",alignItems:"center",gap:7}}>
+                <span style={{fontSize:12,fontWeight:700,color:e.type==="income"?C.up:C.down}}>{e.type==="income"?"+":"-"}NT${fmt(e.amount)}</span>
+                <button style={{background:"none",border:"none",color:C.muted,cursor:"pointer",fontSize:13}} onClick={()=>setExpenses(p=>p.filter(x=>x.id!==e.id))}>✕</button>
+              </div>
+            </div>
+          ))}</Card>
+        </>}
+
+        {/* ══════════ GOALS ══════════ */}
+        {tab==="goals"&&<>
+          <div style={{...row,marginBottom:8}}>
+            <SL style={{marginBottom:0}}>財務目標追蹤</SL>
+            <button className="btap" style={{...btn(C.gold),padding:"6px 12px",fontSize:11}} onClick={()=>{setShowAG(p=>!p);setEditGId(null);}}>{showAG?"✕":"＋ 目標"}</button>
+          </div>
+          {showAG&&<Card style={{marginBottom:8,border:`1px solid ${C.gold}40`}} className="slide">
+            <SL>{editGId?"編輯":"新增"}目標</SL>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:7,marginBottom:7}}>
+              <input style={inp} placeholder="目標名稱" value={nG.name} onChange={e=>setNG(p=>({...p,name:e.target.value}))}/>
+              <input style={inp} placeholder="目標金額" type="number" value={nG.target} onChange={e=>setNG(p=>({...p,target:e.target.value}))}/>
+              <input style={inp} placeholder="現有金額" type="number" value={nG.current} onChange={e=>setNG(p=>({...p,current:e.target.value}))}/>
+              <input style={inp} type="date" value={nG.deadline} onChange={e=>setNG(p=>({...p,deadline:e.target.value}))}/>
+              <select style={inp} value={nG.color} onChange={e=>setNG(p=>({...p,color:e.target.value}))}>
+                <option value="#C8963E">金色</option><option value="#2980B9">藍色</option><option value="#7D3C98">紫色</option><option value="#1A8A7A">青色</option>
+              </select>
+            </div>
+            <button className="btap" style={btn()} onClick={saveGoal}>{editGId?"儲存":"確認新增"}</button>
+          </Card>}
+          {goals.map(g=>{
+            const pct=Math.min(100,g.current/g.target*100),rem=g.target-g.current;
+            const dl=g.deadline?Math.max(0,Math.floor((new Date(g.deadline)-new Date())/86400000)):null;
+            return <Card key={g.id} style={{marginBottom:8,borderLeft:`3px solid ${g.color}`}}>
+              <div style={{...row,marginBottom:8}}>
+                <div style={{fontSize:13,fontWeight:700}}>{g.name}</div>
+                <div style={{display:"flex",gap:5}}>
+                  <Tag color={pct>=80?C.up:pct>=50?C.gold:C.down}>{pct.toFixed(0)}%</Tag>
+                  <button style={{background:"none",border:"none",color:C.muted,cursor:"pointer",fontSize:12}} onClick={()=>{setNG({name:g.name,target:String(g.target),current:String(g.current),deadline:g.deadline||"",color:g.color});setEditGId(g.id);setShowAG(true);}}>✎</button>
+                  <button style={{background:"none",border:"none",color:C.muted,cursor:"pointer",fontSize:12}} onClick={()=>setGoals(p=>p.filter(x=>x.id!==g.id))}>✕</button>
+                </div>
+              </div>
+              <Bar value={g.current} max={g.target} color={g.color} h={9} label={`NT$${fmtM(g.current)} / ${fmtM(g.target)}`} sub={`還差 NT$${fmtM(rem)}`}/>
+              <div style={{display:"flex",gap:14,marginTop:9,flexWrap:"wrap"}}>
+                {g.deadline&&<div><SL>目標日期</SL><div style={{fontSize:11}}>{g.deadline}</div></div>}
+                {dl!=null&&<div><SL>剩餘天數</SL><div style={{fontSize:11,color:dl<180?C.down:C.text}}>{dl}天</div></div>}
+                {dl&&<div><SL>月存目標</SL><div style={{fontSize:11,color:C.gold}}>NT${fmtM(rem/(dl/30))}</div></div>}
+              </div>
+            </Card>;
+          })}
+        </>}
+
+        {/* ══════════ TAX ══════════ */}
+        {tab==="tax"&&<>
+          <div style={{marginBottom:8}}><SL>稅務試算中心</SL><div style={{fontSize:10,color:C.muted}}>以下為估算值，請以官方申報為準</div></div>
+          <Card style={{marginBottom:8}}>
+            <div style={{...row,marginBottom:10}}><span style={{fontSize:12,fontWeight:700,color:C.gold}}>🧾 綜合所得稅</span><Tag color={C.down}>應繳 NT${fmtM(taxCalc.inc)}</Tag></div>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:9,marginBottom:10}}>
+              {[["薪資所得",fmt(tax.salaryIncome),C.text],["股利(50%)",fmt(tax.dividendIncome*.5),C.text],["租賃(43%)",fmt(tax.rentalIncome*.43),C.text],["綜合總額",fmtM(taxCalc.gross),C.blueL],["扣除合計",fmtM(Object.values(tax.deductions).reduce((s,v)=>s+v,0)),C.down],["課稅淨額",fmtM(taxCalc.taxable),C.gold]].map(([l,v,c])=><div key={l}><SL>{l}</SL><div style={{fontSize:12,fontWeight:600,color:c}}>NT${v}</div></div>)}
+            </div>
+            <HR/><SL>調整扣除額</SL>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:7,marginTop:7}}>
+              {Object.entries(tax.deductions).map(([k,v])=>{const label={standard:"標準扣除額",insurance:"保險費",mortgage:"房貸利息"}[k]||k;return <div key={k}><SL>{label}</SL><input style={{...inp,fontSize:12}} type="number" value={v} onChange={e=>setTax(p=>({...p,deductions:{...p.deductions,[k]:+e.target.value}}))}/></div>;})}
+            </div>
+            <div style={{...row,marginTop:10,background:C.panel2,borderRadius:9,padding:"11px 13px"}}><span style={{fontSize:12}}>實際稅率</span><span style={{fontSize:15,fontWeight:700,color:C.gold}}>{taxCalc.eff.toFixed(1)}%</span></div>
+          </Card>
+          <Card style={{marginBottom:8}}>
+            <div style={{...row,marginBottom:10}}><span style={{fontSize:12,fontWeight:700,color:C.gold}}>🏠 房地合一稅</span></div>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:7,marginBottom:10}}>
+              <div><SL>出售獲利</SL><input style={{...inp,fontSize:12}} type="number" placeholder="0" value={tax.realEstateSaleGain||""} onChange={e=>setTax(p=>({...p,realEstateSaleGain:+e.target.value}))}/></div>
+              <div><SL>持有年數</SL><input style={{...inp,fontSize:12}} type="number" min="0" max="20" value={tax.holdingYears} onChange={e=>setTax(p=>({...p,holdingYears:+e.target.value}))}/></div>
+            </div>
+            <div style={{...row,background:C.panel2,borderRadius:9,padding:"10px 13px",marginBottom:7}}><span style={{fontSize:11}}>適用稅率</span><span style={{fontSize:13,fontWeight:700,color:C.gold}}>{tax.holdingYears>=10?"10%":tax.holdingYears>=5?"15%":tax.holdingYears>=2?"20%":tax.holdingYears>=1?"22%":"45%"}</span></div>
+            <div style={{...row,background:`${C.down}12`,border:`1px solid ${C.down}30`,borderRadius:9,padding:"10px 13px"}}><span style={{fontSize:12}}>應繳房地合一稅</span><span style={{fontSize:15,fontWeight:700,color:C.downL}}>NT${fmtM(taxCalc.re)}</span></div>
+            <div style={{marginTop:7,fontSize:10,color:C.muted}}>持有2年以下45%・2-5年20%・5-10年15%・10年以上10%</div>
+          </Card>
+          <Card style={{border:`1px solid ${C.goldDim}`}}>
+            <div style={row}><span style={{fontSize:13,fontWeight:700}}>總預估稅負</span><span style={{fontSize:18,fontWeight:700,color:C.downL}}>NT${fmtM(taxCalc.total)}</span></div>
+          </Card>
+        </>}
+
+        {/* ══════════ MARKET ══════════ */}
+        {tab==="market"&&<>
+          <div style={{...row,marginBottom:8}}>
+            <SL style={{marginBottom:0}}>AI 市場分析</SL>
+            <button className="btap" style={{...btn(C.blue),padding:"6px 12px",fontSize:11}} onClick={runMkt} disabled={mktLoad}>{mktLoad?"分析中…":"⟳ 更新"}</button>
+          </div>
+          {mktLoad&&<Card><div style={{color:C.muted,fontSize:12,textAlign:"center",padding:"28px 0",animation:"pulse 1.5s infinite"}}>◈ AI 分析市場中…</div></Card>}
+          {mkt&&!mktLoad&&<>
+            <div style={{display:"grid",gridTemplateColumns:isWide?"1fr 1fr 1fr":"1fr 1fr",gap:8,marginBottom:8}}>
+              {[["🇹🇼 台股",mkt.tw,C.gold],["🇺🇸 美股",mkt.us,C.blue],["📊 大盤",mkt.market,C.text]].map(([t,v,c])=>(
+                <Card key={t} style={{borderLeft:`3px solid ${c}`}}><div style={{fontSize:9,color:c,fontWeight:700,marginBottom:5}}>{t}</div><div style={{fontSize:11,lineHeight:1.6}}>{v}</div></Card>
+              ))}
+            </div>
+            <Card style={{marginBottom:8}}>
+              <SL>個股操作建議</SL>
+              {mkt.picks?.map((p,i)=>(
+                <div key={i} className="hr" style={{...row,padding:"10px 3px",borderBottom:i<(mkt.picks?.length||0)-1?`1px solid ${C.border}`:"none",borderRadius:6}}>
+                  <div><div style={{fontSize:12,fontWeight:700}}>{p.name}</div><div style={{fontSize:10,color:C.muted,marginTop:2,lineHeight:1.5}}>{p.reason}</div></div>
+                  <Tag color={p.action==="買入"?C.up:p.action==="減碼"?C.down:C.gold}>{p.action==="買入"?"▲ 買入":p.action==="減碼"?"▼ 減碼":"◆ 持有"}</Tag>
+                </div>
+              ))}
+            </Card>
+          </>}
+          {!mkt&&!mktLoad&&<Card><div style={{textAlign:"center",color:C.muted,padding:"36px 0",fontSize:12}}><div style={{fontSize:28,marginBottom:10}}>🌐</div>點擊「更新」取得 AI 市場洞察</div></Card>}
+          <Card>
+            <SL>持倉即時動態</SL>
+            {stocks.map((s,i)=>{const chg=(s.price-s.prev)/s.prev*100;return <div key={s.id} style={{...row,padding:"8px 0",borderBottom:i<stocks.length-1?`1px solid ${C.border}`:"none"}}>
+              <div style={{display:"flex",alignItems:"center",gap:7}}>
+                <div style={{width:5,height:5,borderRadius:"50%",background:chg>=0?C.up:C.down,animation:Math.abs(chg)>1?"pulse 1.5s infinite":"none"}}/>
+                <span style={{fontSize:12,fontWeight:600}}>{s.name}</span>
+                <span style={{fontSize:9,color:C.muted}}>{s.symbol}</span>
+              </div>
+              <div style={{display:"flex",gap:8,alignItems:"center"}}>
+                <Sparkline data={hist[s.id]||[]} color={chg>=0?C.up:C.down} w={56} h={22}/>
+                <div style={{textAlign:"right"}}><div style={{fontSize:12,fontWeight:700}}>{fmt(s.price,2)}</div><Tag color={chg>=0?C.up:C.down}>{chg>=0?"+":""}{chg.toFixed(2)}%</Tag></div>
+              </div>
+            </div>;})}
+          </Card>
+        </>}
+
+      </div>{/* end scroll */}
+
+      {/* ── Bottom nav (mobile) ─────────────────────────────────────────── */}
+      {!isWide&&<div className="safe-bot" style={{background:C.panel,borderTop:`1px solid ${C.border}`,display:"flex",gap:0,flexShrink:0,zIndex:30}}>
+        {TABS.map(([v,icon])=>(
+          <button key={v} className="btap" onClick={()=>setTab(v)} style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",gap:2,padding:"9px 0",border:"none",background:"none",cursor:"pointer",color:tab===v?C.gold:C.muted,transition:"color .2s",WebkitTapHighlightColor:"transparent",minWidth:0}}>
+            <span style={{fontSize:16}}>{icon}</span>
+            <span style={{fontSize:8,fontWeight:700,letterSpacing:.3}}>{TLABELS[v]}</span>
+          </button>
+        ))}
+      </div>}
+
+      {/* ── Bottom action bar (wide) ────────────────────────────────────── */}
+      {isWide&&<div style={{background:C.panel,borderTop:`1px solid ${C.border}`,padding:"10px 14px",display:"flex",gap:8,flexShrink:0}}>
+        <button className="btap" style={{...btn(C.gold),flex:1,fontSize:11}} onClick={()=>exportPDF({nw,sv,sr,rv,rc,fv,fr,pu,goals,ai})}>📄 匯出PDF報告</button>
+        <button className="btap" style={{...btn(C.blue,true),flex:1,fontSize:11}} onClick={runAI} disabled={aiLoad}>{aiLoad?"◈ 分析中…":"◆ AI 重新分析"}</button>
+        <button className="btap" style={{...btn(C.teal,true),flex:1,fontSize:11}} onClick={fetchLive} disabled={liveLoad}>{liveLoad?"⟳ 更新中…":"⟳ 即時報價"}</button>
+      </div>}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+document.getElementById('loading').remove();
+</script>
+</body>
+</html>
